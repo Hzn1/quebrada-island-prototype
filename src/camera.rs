@@ -46,7 +46,7 @@ impl FirstPersonCamera {
     /// Mouse dx controls yaw, dy controls pitch with clamping.
     pub fn update_from_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
         let sensitivity = config::MOUSE_SENSITIVITY;
-        self.yaw += mouse_dx * sensitivity;
+        self.yaw -= mouse_dx * sensitivity;
         self.pitch += mouse_dy * sensitivity;
         // Clamp pitch to prevent flipping upside-down
         self.pitch = self
