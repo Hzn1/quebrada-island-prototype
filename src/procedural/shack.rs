@@ -1,5 +1,4 @@
-use macroquad::math::Vec3;
-
+use macroquad::prelude::*;
 use crate::procedural::voxel_block::{VoxelBlock, VoxelType};
 
 /// Generates a procedural shack as a collection of voxel blocks.

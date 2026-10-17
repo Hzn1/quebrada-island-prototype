@@ -1,69 +1,93 @@
 use macroquad::prelude::*;
-
-use crate::config::config;
+use std::f32::consts::PI;
+use crate::config;
 
 /// First-person camera implementation for a voxel-based game.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FirstPersonCamera {
+    /// Position of the camera in world space.
     pub position: Vec3,
-    pub yaw: f32,   // Horizontal rotation in radians
-    pub pitch: f32, // Vertical rotation in radians (clamped to +/-89 degrees)
+    /// Yaw angle in radians (rotation around Y-axis).
+    /// 0.0 = looking along negative Z axis.
+    pub yaw: f32,
+    /// Pitch angle in radians (rotation around X-axis, clamped to avoid gimbal lock).
+    /// 0.0 = looking straight ahead.
+    pub pitch: f32,
+    /// Front direction vector (normalized).
     pub front: Vec3,
-    pub up: Vec3,
+    /// Right direction vector (normalized).
     pub right: Vec3,
+    /// Up direction vector (normalized).
+    pub up: Vec3,
 }
 
 impl FirstPersonCamera {
     /// Creates a new first-person camera at the given position.
+    /// 
+    /// Initializes with yaw=0, pitch=0 (looking along negative Z-axis).
     pub fn new(position: Vec3) -> Self {
         let mut camera = Self {
             position,
-            yaw: -std::f32::consts::FRAC_PI_2, // Começa olhando para frente (ajuste o ângulo se precisar)
+            yaw: 0.0,
             pitch: 0.0,
-            front: Vec3::default(),
-            up: Vec3::default(),
-            right: Vec3::default(),
+            front: Vec3::ZERO,
+            right: Vec3::ZERO,
+            up: Vec3::ZERO,
         };
-        // IMPORTANTE: Calcula os vetores logo na criação para não iniciarem zerados!
-        camera.update_vectors(camera.yaw, camera.pitch);
+        camera.update_vectors();
         camera
     }
 
-    /// Recalculates front/right/up from current yaw/pitch and assigns them.
-    fn update_vectors(&mut self, yaw: f32, pitch: f32) {
-        let pitch_clamped = pitch
-            .max(-std::f32::consts::PI / 2.0)
-            .min(std::f32::consts::PI / 2.0 - 0.01);
-        let front_x = yaw.cos() * pitch_clamped.cos();
-        let front_y = pitch_clamped.sin();
-        let front_z = yaw.sin() * pitch_clamped.cos();
-        self.front = Vec3::new(front_x, front_y, front_z).normalize();
+    /// Updates the front, right, and up vectors based on current yaw and pitch.
+    /// 
+    /// This must be called whenever yaw or pitch changes.
+    fn update_vectors(&mut self) {
+        // Clamp pitch to prevent screen flip when looking straight up/down
+        self.pitch = self.pitch.max(-PI / 2.0 + 0.01).min(PI / 2.0 - 0.01);
+        
+        // Calculate front vector using spherical coordinates
+        // In Macroquad's right-handed coordinate system:
+        // - X: right
+        // - Y: up  
+        // - Z: backward (so -Z is forward)
+        self.front = Vec3::new(
+            self.yaw.cos() * self.pitch.cos(),
+            self.pitch.sin(),
+            self.yaw.sin() * self.pitch.cos(),
+        ).normalize();
+        
+        // Calculate right vector: front × world_up (where world_up = +Y)
         self.right = self.front.cross(Vec3::Y).normalize();
+        
+        // Recalculate up vector to ensure orthogonality: right × front
         self.up = self.right.cross(self.front).normalize();
     }
 
-    /// Updates camera orientation from mouse delta movement.
-    /// Mouse dx controls yaw, dy controls pitch with clamping.
-    pub fn update_from_mouse(&mut self, mouse_dx: f32, mouse_dy: f32) {
-        let sensitivity = config::MOUSE_SENSITIVITY;
-        self.yaw -= mouse_dx * sensitivity;
-        self.pitch += mouse_dy * sensitivity;
-        // Clamp pitch to prevent flipping upside-down
-        self.pitch = self
-            .pitch
-            .max(-std::f32::consts::PI / 2.0 + 0.01)
-            .min(std::f32::consts::PI / 2.0 - 0.01);
-        self.update_vectors(self.yaw, self.pitch);
+    /// Rotates the camera by the given yaw/pitch deltas, in radians.
+    ///
+    /// A positive `yaw_delta` turns the camera to the right; a positive
+    /// `pitch_delta` looks up. Pitch is clamped to prevent gimbal lock.
+    ///
+    /// Input-device units, signs and mouse sensitivity are the caller's
+    /// responsibility (see `config::MOUSE_SENSITIVITY`).
+    pub fn update_from_mouse(&mut self, yaw_delta: f32, pitch_delta: f32) {
+        self.yaw += yaw_delta;
+        self.pitch += pitch_delta;
+
+        // Update the directional vectors (update_vectors clamps the pitch)
+        self.update_vectors();
     }
 
     /// Returns a Camera3D compatible with Macroquad's render pipeline.
+    /// 
+    /// The camera looks from `position` toward `position + front`.
     pub fn get_macroquad_camera(&self) -> Camera3D {
-        Camera3D {
-            position: self.position,
-            target: self.position + self.front,
-            up: self.up,
-            fovy: 90.0,           // Campo de visão vertical em graus
-            ..Default::default() // Preenche automaticamente o resto (aspect, projection, viewport, etc.)
-        }
+        let mut cam = Camera3D::default();
+        cam.position = self.position;
+        cam.target = self.position + self.front;
+        cam.up = self.up;
+        // Camera3D::fovy expects radians (Camera3D::default uses 45°.to_radians())
+        cam.fovy = 60.0_f32.to_radians();
+        cam
     }
 }

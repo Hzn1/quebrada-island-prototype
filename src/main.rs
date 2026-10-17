@@ -2,17 +2,17 @@ use macroquad::prelude::*;
 use std::time::Instant;
 
 // Module declarations make submodules accessible via crate:: paths
-mod camera;
 mod config;
-mod graphics;
 mod player;
+mod camera;
 mod procedural;
+mod graphics;
 
-use crate::camera::FirstPersonCamera;
-use crate::config::config::PLAYER_HEIGHT;
-// use crate::graphics::crt_filter::CrtFilter;
 use crate::player::Player;
 use crate::procedural::terrain::Terrain;
+use crate::procedural::tree::generate_tree;
+use crate::procedural::shack::generate_shack;
+use crate::graphics::crt_filter::CrtFilter;
 
 // Window configuration function
 fn window_conf() -> Conf {
@@ -21,10 +21,6 @@ fn window_conf() -> Conf {
         window_width: 1280,
         window_height: 720,
         fullscreen: false,
-        platform: macroquad::miniquad::conf::Platform {
-            swap_interval: Some(0),
-            ..Default::default()
-        },
         ..Default::default()
     }
 }
@@ -32,16 +28,19 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     // Initialize game objects
-    let mut terrain = Terrain::new(50, 50);
-    let mut player = Player::new(Vec3::new(0.0, 2.0, 0.0));
-    let mut camera = FirstPersonCamera::new(Vec3::new(0.0, 2.0, 0.0));
+    let terrain = Terrain::new(50, 50);
+
+    // Spawn the player standing on the terrain surface (not inside it).
+    let spawn_y = terrain.get_height_at(0.0, 0.0) + config::PLAYER_HEIGHT / 2.0;
+    let mut player = Player::new(vec3(0.0, spawn_y, 0.0));
 
     // Capture and hide the mouse cursor for FPS look
     set_cursor_grab(true);
     show_mouse(false);
 
-    // CRT filter at lower resolution for performance on modest hardware
-    // let mut crt_filter = CrtFilter::new(640, 360);
+    // CRT filter: the scene is rendered into a 640x360 target (cheaper) and
+    // then upscaled to the screen with the CRT shader.
+    let crt_filter = CrtFilter::new(640, 360);
 
     // Frame pacing variables
     let mut last_instant = Instant::now();
@@ -49,50 +48,55 @@ async fn main() {
     let fixed_dt = 1.0 / 60.0;
 
     loop {
-        // --- Frame Pacing: calculate elapsed time and cap at 60 FPS ---
+        // --- Frame pacing: calculate elapsed time and sleep to cap at 60 FPS ---
         let now = Instant::now();
         let elapsed = now.duration_since(last_instant).as_secs_f32();
         last_instant = now;
-        accumulator += elapsed;
+        // Clamp the accumulated time to avoid a "spiral of death" after a long
+        // stall (e.g. while dragging the window).
+        accumulator = (accumulator + elapsed).min(0.25);
 
-        // Get mouse delta once per frame
-        let m_delta = mouse_delta_position();
+        // --- Mouse look (once per frame; it does not need a fixed timestep) ---
+        // macroquad's mouse_delta_position() is normalised to [-1, 1] and its
+        // sign is inverted (it returns previous - current), so convert it back
+        // to raw mouse counts and apply our conventions:
+        //   positive yaw   = turn right
+        //   positive pitch = look up
+        let mouse = mouse_delta_position();
+        let yaw_delta = -mouse.x * screen_width() * 0.5 * config::MOUSE_SENSITIVITY;
+        let pitch_delta = mouse.y * screen_height() * 0.5 * config::MOUSE_SENSITIVITY;
+        player.camera.update_from_mouse(yaw_delta, pitch_delta);
 
         // --- Update logic at fixed timestep ---
         while accumulator >= fixed_dt {
-            // Handle input and update player physics
-            player.handle_input(fixed_dt);
-            player.apply_physics(fixed_dt, 0.0);
-            player.update(fixed_dt, 0.0);
-
-            // Update camera position to follow player
-            camera.position = player.position + Vec3::Y * (PLAYER_HEIGHT / 2.0);
-
-            // Apply mouse deltas to camera for looking around
-            camera.update_from_mouse(m_delta.x, m_delta.y);
-
+            // Player::update() runs input + physics using player.camera.front /
+            // player.camera.right, so movement follows where the player looks.
+            let ground_height = terrain.get_height_at(player.position.x, player.position.z);
+            player.update(fixed_dt, ground_height);
             accumulator -= fixed_dt;
         }
 
         // --- Render ---
-        // Begin CRT render target (commented out for now)
-        // crt_filter.begin_render();
+        // Render the scene into the CRT filter's low-res target (640x360),
+        // using the first-person camera
+        crt_filter.begin_render(player.camera.get_macroquad_camera());
 
-        // Clear the screen (black)
+        // Clear the target (black)
         clear_background(BLACK);
 
-        // Activate the 3D camera render pipeline
-        set_camera(&camera.get_macroquad_camera());
-
-        // Render the terrain
+        // Draw the scene (terrain)
         terrain.render();
 
-        // Reset to default 2D camera for UI/HUD (if any)
-        set_default_camera();
+        // Upscale the target to the screen with the CRT shader applied
+        crt_filter.draw_to_screen();
 
-        // End render target and draw to screen with CRT effect
-        // crt_filter.end_render();
-        // crt_filter.draw_to_screen();
+        // Frame pacing: sleep if we finished the frame early to maintain 60 FPS
+        let frame_duration = now.elapsed();
+        let target_duration = std::time::Duration::from_secs_f32(1.0 / 60.0);
+        if frame_duration < target_duration {
+            let remaining = target_duration - frame_duration;
+            std::thread::sleep(remaining);
+        }
 
         // Present the next frame
         next_frame().await;

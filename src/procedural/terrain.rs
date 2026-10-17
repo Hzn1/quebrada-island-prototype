@@ -1,10 +1,9 @@
 use macroquad::prelude::*;
-
-use crate::config::config::VOXEL_SIZE;
+use crate::config;
 use crate::procedural::voxel_block::{VoxelBlock, VoxelType};
 
-// Prototypical terrain generated using simple trigonometric functions.
-// Simulates a hill/mountain without needing external terrain data.
+/// Procedural terrain generated using simple trigonometric functions.
+/// Simulates a hill/mountain without needing external terrain data.
 pub struct Terrain {
     /// Width of the terrain in number of voxels.
     width: usize,
@@ -23,17 +22,15 @@ impl Terrain {
                 // Combine sine waves to create rolling hills
                 let xf = x as f32;
                 let zf = z as f32;
-                let height = 10.0 * (xf * 0.1).sin() * (zf * 0.1).cos()
+                let height = 10.0
+                    * (xf * 0.1).sin()
+                    * (zf * 0.1).cos()
                     + 5.0 * (xf * 0.05).sin()
                     + 3.0 * (zf * 0.05).cos();
                 heights.push(height.max(0.0));
             }
         }
-        Self {
-            width,
-            depth,
-            heights,
-        }
+        Self { width, depth, heights }
     }
 
     /// Returns the height (Y coordinate) at a given world X and Z position.
@@ -53,12 +50,12 @@ impl Terrain {
     /// Renders the terrain surface by drawing cubes for each voxel column
     /// up to the height map value.
     pub fn render(&self) {
-        let size = VOXEL_SIZE;
+        let size = config::VOXEL_SIZE;
         for z in 0..self.depth {
             for x in 0..self.width {
                 let h = self.heights[x + z * self.width];
                 let y = h / 2.0; // center the voxel column at half height
-                                 // Draw a column of voxels from ground up to height
+                // Draw a column of voxels from ground up to height
                 for vy in 0..=h as i32 {
                     let Vy = vy as f32;
                     let block_type = if Vy == h as f32 {
@@ -71,10 +68,13 @@ impl Terrain {
                         // Lower layer: nothing below ground level
                         continue;
                     };
-                    let pos = Vec3::new(x as f32, Vy as f32, z as f32);
+                    let pos = Vec3::new(
+                        x as f32,
+                        Vy as f32,
+                        z as f32,
+                    );
                     let color = VoxelBlock::get_color_for_type(block_type);
                     // Draw a single cube at this position
-                    // TODO: draw_cube(pos + Vec3::Y * (size / 2.0), size, size, size, color); -> Inject the color
                     draw_cube(
                         pos + Vec3::Y * (size / 2.0),
                         Vec3::new(size, size, size),
