@@ -16,13 +16,24 @@ use crate::graphics::crt_filter::CrtFilter;
 
 // Window configuration function
 fn window_conf() -> Conf {
-    Conf {
+    let mut conf = Conf {
         window_title: "Quebrada Island - Voxel Engine".to_string(),
         window_width: 1280,
         window_height: 720,
         fullscreen: false,
         ..Default::default()
-    }
+    };
+
+    // Disable vertical sync (vsync).
+    //
+    // With vsync enabled the buffer swap waits for the monitor's vblank. If a
+    // frame takes even slightly longer than one refresh period, the driver
+    // misses that deadline and waits for the next one, which halves the frame
+    // rate (60 Hz -> 30 FPS). `swap_interval = Some(0)` tells the driver to
+    // present the frame immediately instead of waiting for the vblank.
+    conf.platform.swap_interval = Some(0);
+
+    conf
 }
 
 #[macroquad::main(window_conf)]
@@ -45,10 +56,10 @@ async fn main() {
     // Frame pacing variables
     let mut last_instant = Instant::now();
     let mut accumulator = 0.0f32;
-    let fixed_dt = 1.0 / 60.0;
+    let fixed_dt = config::FRAME_TIME_SEC;
 
     loop {
-        // --- Frame pacing: calculate elapsed time and sleep to cap at 60 FPS ---
+        // --- Frame timing: measure the delta and feed the fixed-step accumulator ---
         let now = Instant::now();
         let elapsed = now.duration_since(last_instant).as_secs_f32();
         last_instant = now;
@@ -90,12 +101,23 @@ async fn main() {
         // Upscale the target to the screen with the CRT shader applied
         crt_filter.draw_to_screen();
 
-        // Frame pacing: sleep if we finished the frame early to maintain 60 FPS
-        let frame_duration = now.elapsed();
-        let target_duration = std::time::Duration::from_secs_f32(1.0 / 60.0);
-        if frame_duration < target_duration {
-            let remaining = target_duration - frame_duration;
-            std::thread::sleep(remaining);
+        // --- HUD (screen space, drawn on top of the CRT pass) ---
+        // FPS counter in the top-left corner. A dark shadow behind keeps it
+        // readable over bright terrain.
+        let fps_text = format!("FPS: {}", get_fps());
+        draw_text(&fps_text, 11.0, 27.0, 26.0, BLACK);
+        draw_text(&fps_text, 10.0, 26.0, 26.0, WHITE);
+
+        // Frame pacing: optionally cap the frame rate (see config::TARGET_FPS).
+        // Vsync is disabled in `window_conf`, so with the cap set to 0 the loop
+        // simply runs as fast as the machine can render.
+        if config::TARGET_FPS > 0 {
+            let frame_duration = now.elapsed();
+            let target_duration =
+                std::time::Duration::from_secs_f32(1.0 / config::TARGET_FPS as f32);
+            if frame_duration < target_duration {
+                std::thread::sleep(target_duration - frame_duration);
+            }
         }
 
         // Present the next frame

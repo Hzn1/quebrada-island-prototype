@@ -1,5 +1,11 @@
 /// Global game configuration constants.
-pub const TARGET_FPS: u32 = 60;
+///
+/// Render frame-rate cap.
+/// `0` means "no cap" (render as fast as the machine can, since vsync is
+/// disabled); set it to e.g. `60` or `144` to limit the frame rate again.
+pub const TARGET_FPS: u32 = 0;
+/// Fixed timestep used for the physics/input simulation (always 60 Hz,
+/// independent of the render frame rate).
 pub const FRAME_TIME_SEC: f32 = 1.0 / 60.0;
 
 /// Walking speed in units per second.
