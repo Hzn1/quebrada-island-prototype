@@ -78,6 +78,13 @@ async fn main() {
         let pitch_delta = mouse.y * screen_height() * 0.5 * config::MOUSE_SENSITIVITY;
         player.camera.update_from_mouse(yaw_delta, pitch_delta);
 
+        // --- Input sampled once per frame ---
+        // is_key_pressed() is edge-triggered and must be read every frame: the
+        // fixed-step loop below can run zero times in a given frame at high FPS.
+        if is_key_pressed(KeyCode::Space) {
+            player.request_jump();
+        }
+
         // --- Update logic at fixed timestep ---
         while accumulator >= fixed_dt {
             // Player::update() runs input + physics using player.camera.front /
@@ -91,7 +98,6 @@ async fn main() {
         // Render the scene into the CRT filter's low-res target (640x360),
         // using the first-person camera
         crt_filter.begin_render(player.camera.get_macroquad_camera());
-
         // Clear the target (black)
         clear_background(BLACK);
 

@@ -12,10 +12,13 @@ pub const FRAME_TIME_SEC: f32 = 1.0 / 60.0;
 pub const WALK_SPEED: f32 = 5.0;
 /// Running speed (shift multiplier) in units per second.
 pub const RUN_SPEED: f32 = 10.0;
-/// Jump force applied when the player jumps.
+/// Jump force applied when the player jumps (initial upward velocity, u/s).
+/// With the current GRAVITY this gives a jump height of about 1.3 voxels.
 pub const JUMP_FORCE: f32 = 8.0;
-/// Gravity acceleration applied each frame.
-pub const GRAVITY: f32 = 15.0;
+/// Gravity acceleration in units per second squared. Real gravity is ~9.8, but
+/// games usually use a higher value so falling feels immediate instead of
+/// floaty ("moon" feel).
+pub const GRAVITY: f32 = 25.0;
 /// Player height above ground.
 pub const PLAYER_HEIGHT: f32 = 2.0;
 
