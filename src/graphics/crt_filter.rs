@@ -81,7 +81,21 @@ impl CrtFilter {
     pub fn new(width: u32, height: u32) -> Self {
         // The scene is rendered into this low-resolution target and then
         // upscaled to the screen by the CRT shader.
-        let render_target = render_target(width, height);
+        //
+        // CRITICAL: the target MUST have a depth attachment. The shortcut
+        // `render_target()` creates one with `depth: false`; rendering a
+        // Camera3D scene into it then performs no depth testing at all
+        // (there is no depth buffer to test against), so faces are painted
+        // in submission order and nearer/farther geometry overwrites each
+        // other - the "blocks are invisible / cut in half" artefact.
+        let render_target = render_target_ex(
+            width,
+            height,
+            RenderTargetParams {
+                sample_count: 1,
+                depth: true,
+            },
+        );
         render_target.texture.set_filter(FilterMode::Nearest);
 
         let material = load_material(

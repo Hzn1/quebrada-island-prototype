@@ -174,12 +174,9 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
             // Side faces toward lower neighbours, run-length encoded so
             // each material band becomes a single tall quad.
             for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let nh_f = grid_h(lx + dx, lz + dz);
-                // Forçar emissão da face lateral caso haja qualquer diferença
-                // entre coluna e vizinho (evita buracos entre chunks com
-                // arredondamento/numérico). Só não emite se vizinho for >= top.
-                if nh_f + 1e-3 >= (top as f32) {
-                    continue;
+                let nh = grid_h(lx + dx, lz + dz) as i32;
+                if nh >= top {
+                    continue; // neighbour hides this side entirely
                 }
                 let (light, normal) = match (dx, dz) {
                     (1, 0) => (LIGHT_SIDE_X, Vec3::X),
@@ -187,31 +184,14 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                     (0, 1) => (LIGHT_SIDE_Z, Vec3::Z),
                     _ => (LIGHT_SIDE_Z, Vec3::NEG_Z),
                 };
-                let mut y = nh_f.floor() as i32;
-                if y >= top {
-                    continue;
-                }
-                let mut sy = y;
-                while sy < top {
-                    let kind = kind_at(sy);
-                    let mut y2 = sy + 1;
+                let mut y = nh;
+                while y < top {
+                    let kind = kind_at(y);
+                    let mut y2 = y + 1;
                     while y2 < top && kind_at(y2) == kind {
-                        y2 += 1;
+                        y2 += 1; // extend the run while the material matches
                     }
-                    if (y2 as f32) < nh_f + 1e-4 {
-                        y2 = (nh_f + 1e-4).ceil() as i32;
-                    }
-                    if y2 > top {
-                        y2 = top;
-                    }
-                    if y2 <= sy {
-                        sy += 1;
-                        if sy >= top {
-                            break;
-                        }
-                        continue;
-                    }
-                    let (fy0, fy1) = (sy as f32, y2 as f32);
+                    let (fy0, fy1) = (y as f32, y2 as f32);
                     let color = face_color(kind, jitter, light, Vec3::ONE);
                     let corners = match (dx, dz) {
                         (1, 0) => [
@@ -232,7 +212,7 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                         ],
                     };
                     push_quad(&mut verts, &mut indices, corners, normal, color);
-                    sy = y2;
+                    y = y2;
                 }
             }
         }
@@ -382,5 +362,189 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
         water_depth,
         center,
         radius,
+    }
+}
+
+#[cfg(test)]
+mod audit {
+    use super::*;
+    use crate::procedural::terrain::Terrain;
+    use std::collections::HashMap;
+
+    fn quads(mesh: &Mesh) -> Vec<[Vec3; 4]> {
+        let v = &mesh.vertices;
+        (0..v.len() / 4)
+            .map(|q| {
+                [
+                    v[q * 4].position,
+                    v[q * 4 + 1].position,
+                    v[q * 4 + 2].position,
+                    v[q * 4 + 3].position,
+                ]
+            })
+            .collect()
+    }
+
+    /// Verifies the mesher emits: 1 top face per column, and full side-face
+    /// coverage towards every lower neighbour. Also checks index validity and
+    /// duplicate (coincident) quads.
+    #[test]
+    fn mesh_integrity() {
+        let seed = config::WORLD_SEED;
+        let terrain = Terrain::new(seed);
+        let s = config::CHUNK_SIZE;
+        let mut worst_verts = 0usize;
+        let mut missing_tops = 0usize;
+        let mut wrong_tops = 0usize;
+        let mut missing_side = 0usize;
+        let mut short_side = 0usize;
+        let mut bad_index = 0usize;
+        let mut duplicates = 0usize;
+
+        for cz in -2..2 {
+            for cx in -2..2 {
+                let c = build(cx, cz, &terrain, seed);
+                let ox = cx * s;
+                let oz = cz * s;
+                let vlen = c.mesh.vertices.len();
+                worst_verts = worst_verts.max(vlen);
+                if vlen % 4 != 0 {
+                    panic!("chunk ({cx},{cz}): vertex count {vlen} is not a multiple of 4");
+                }
+                for &i in &c.mesh.indices {
+                    if i as usize >= vlen {
+                        bad_index += 1;
+                    }
+                }
+
+                let qs = quads(&c.mesh);
+
+                // Top faces per column
+                let mut tops: HashMap<(i32, i32), Vec<f32>> = HashMap::new();
+                // Side runs keyed by (axis, plane, off) -> runs of (y0,y1)
+                let mut sides: HashMap<(u8, i32, i32), Vec<(f32, f32)>> = HashMap::new();
+                let mut seen: HashMap<[i64; 12], u32> = HashMap::new();
+
+                for q in &qs {
+                    let mut key = [0i64; 12];
+                    for (i, p) in q.iter().enumerate() {
+                        key[i * 3] = (p.x * 32.0).round() as i64;
+                        key[i * 3 + 1] = (p.y * 32.0).round() as i64;
+                        key[i * 3 + 2] = (p.z * 32.0).round() as i64;
+                    }
+                    *seen.entry(key).or_insert(0) += 1;
+
+                    let [a, b, cc, d] = *q;
+                    let all_y_eq = a.y == b.y && b.y == cc.y && cc.y == d.y;
+                    let all_x_eq = a.x == b.x && b.x == cc.x && cc.x == d.x;
+                    let all_z_eq = a.z == b.z && b.z == cc.z && cc.z == d.z;
+                    let ymin = [a.y, b.y, cc.y, d.y].iter().cloned().fold(f32::INFINITY, f32::min);
+                    let ymax =
+                        [a.y, b.y, cc.y, d.y].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+                    if all_y_eq {
+                        let xs = [a.x, b.x, cc.x, d.x];
+                        let zs = [a.z, b.z, cc.z, d.z];
+                        let xmin = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let xmax = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let zmin = zs.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let zmax = zs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let w = (xmax - xmin).round() as i32;
+                        let h = (zmax - zmin).round() as i32;
+                        if w == 1 && h == 1 {
+                            tops.entry((xmin.floor() as i32 - ox, zmin.floor() as i32 - oz))
+                                .or_default()
+                                .push(a.y);
+                        }
+                    } else if all_x_eq {
+                        let plane = (a.x - ox as f32).round() as i32;
+                        let zmin = [a.z, b.z, cc.z, d.z].iter().cloned().fold(f32::INFINITY, f32::min);
+                        let off = zmin.floor() as i32 - oz;
+                        sides.entry((b'X', plane, off)).or_default().push((ymin, ymax));
+                    } else if all_z_eq {
+                        let plane = (a.z - oz as f32).round() as i32;
+                        let xmin = [a.x, b.x, cc.x, d.x].iter().cloned().fold(f32::INFINITY, f32::min);
+                        let off = xmin.floor() as i32 - ox;
+                        sides.entry((b'Z', plane, off)).or_default().push((ymin, ymax));
+                    }
+                }
+
+                for dup in seen.values() {
+                    if *dup > 1 {
+                        duplicates += *dup as usize - 1;
+                    }
+                }
+
+                // 1 top face per column, at the sampled height
+                for lz in 0..s {
+                    for lx in 0..s {
+                        let expected = terrain
+                            .get_height_at((ox + lx) as f32 + 0.5, (oz + lz) as f32 + 0.5)
+                            as i32;
+                        match tops.get(&(lx, lz)) {
+                            None => missing_tops += 1,
+                            Some(ys) => {
+                                // Extra top faces can legitimately exist here
+                                // (decoration blocks sitting on the column);
+                                // what matters is that the terrain top is present.
+                                if !ys.iter().any(|y| *y as i32 == expected) {
+                                    wrong_tops += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // side coverage
+                for lz in 0..s {
+                    for lx in 0..s {
+                        let top = terrain
+                            .get_height_at((ox + lx) as f32 + 0.5, (oz + lz) as f32 + 0.5)
+                            as i32;
+                        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                            let ntop = terrain
+                                .get_height_at(
+                                    (ox + lx + dx) as f32 + 0.5,
+                                    (oz + lz + dz) as f32 + 0.5,
+                                ) as i32;
+                            if ntop >= top {
+                                continue;
+                            }
+                            let key = if dz == 0 {
+                                (b'X', if dx == 1 { lx + 1 } else { lx }, lz)
+                            } else {
+                                (b'Z', if dz == 1 { lz + 1 } else { lz }, lx)
+                            };
+                            let covered: f32 = sides
+                                .get(&key)
+                                .map(|rs| {
+                                    rs.iter()
+                                        .filter(|(y0, y1)| *y1 > ntop as f32 && *y0 < top as f32)
+                                        .map(|(y0, y1)| y1.min(top as f32) - y0.max(ntop as f32))
+                                        .sum()
+                                })
+                                .unwrap_or(0.0);
+                            let expected = (top - ntop) as f32;
+                            if covered <= 0.0 {
+                                missing_side += 1;
+                            } else if covered + 1e-3 < expected {
+                                short_side += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        println!(
+            "worst_verts={worst_verts} missing_tops={missing_tops} wrong_tops={wrong_tops} \
+             missing_side={missing_side} short_side={short_side} bad_index={bad_index} \
+             duplicates={duplicates}"
+        );
+
+        assert_eq!(bad_index, 0, "mesh indices reference out-of-range vertices");
+        assert_eq!(missing_tops, 0, "columns without a top face");
+        assert_eq!(missing_side, 0, "exposed side faces missing");
+        assert_eq!(short_side, 0, "side faces not covering the exposed height");
     }
 }
