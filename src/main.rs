@@ -2,27 +2,25 @@ use macroquad::prelude::*;
 use std::time::Instant;
 
 // Module declarations make submodules accessible via crate:: paths
-mod config;
-mod player;
 mod camera;
-mod procedural;
+mod config;
 mod graphics;
+mod player;
+mod procedural;
+mod world;
 
-use crate::player::Player;
-use crate::procedural::terrain::Terrain;
-use crate::procedural::tree::generate_tree;
-use crate::procedural::shack::generate_shack;
 use crate::graphics::crt_filter::CrtFilter;
+use crate::graphics::sky;
+use crate::player::Player;
+use crate::world::World;
 
 // Window configuration function
-fn window_conf() -> Conf {
-    let mut conf = Conf {
-        window_title: "Quebrada Island - Voxel Engine".to_string(),
-        window_width: 1280,
-        window_height: 720,
-        fullscreen: false,
-        ..Default::default()
-    };
+fn window_conf() -> macroquad::conf::Conf {
+    let mut conf = macroquad::conf::Conf::default();
+    conf.miniquad_conf.window_title = "Quebrada Island - Voxel Engine".to_string();
+    conf.miniquad_conf.window_width = 1280;
+    conf.miniquad_conf.window_height = 720;
+    conf.miniquad_conf.fullscreen = false;
 
     // Disable vertical sync (vsync).
     //
@@ -31,19 +29,30 @@ fn window_conf() -> Conf {
     // misses that deadline and waits for the next one, which halves the frame
     // rate (60 Hz -> 30 FPS). `swap_interval = Some(0)` tells the driver to
     // present the frame immediately instead of waiting for the vblank.
-    conf.platform.swap_interval = Some(0);
+    conf.miniquad_conf.platform.swap_interval = Some(0);
+
+    // macroquad batches geometry into fixed-size CPU/GPU buffers created at
+    // startup. The defaults (10k vertices / 5k indices) would silently
+    // TRUNCATE our voxel chunk meshes, so raise them to cover a full chunk
+    // (u16 index limit = 65536 vertices). Bigger batches also mean fewer
+    // draw calls: several chunks merge into a single one.
+    conf.draw_call_vertex_capacity = 65_536;
+    conf.draw_call_index_capacity = 98_304;
 
     conf
 }
 
-#[macroquad::main(window_conf)]
-async fn main() {
-    // Initialize game objects
-    let terrain = Terrain::new(50, 50);
+async fn run() {
+    // Initialize the procedural world (infinite island streamed in chunks)
+    let mut world = World::new(config::WORLD_SEED);
 
-    // Spawn the player standing on the terrain surface (not inside it).
-    let spawn_y = terrain.get_height_at(0.0, 0.0) + config::PLAYER_HEIGHT / 2.0;
-    let mut player = Player::new(vec3(0.0, spawn_y, 0.0));
+    // Spawn on dry, flat ground near the island centre
+    let spawn = world.find_spawn();
+    let mut player = Player::new(spawn);
+
+    // Generate the chunks around the spawn up-front (one-time cost before
+    // the loop starts) so the first frames are hitch-free.
+    world.warm_up(player.position, config::WARMUP_RADIUS);
 
     // Capture and hide the mouse cursor for FPS look
     set_cursor_grab(true);
@@ -87,32 +96,41 @@ async fn main() {
 
         // --- Update logic at fixed timestep ---
         while accumulator >= fixed_dt {
-            // Player::update() runs input + physics using player.camera.front /
-            // player.camera.right, so movement follows where the player looks.
-            let ground_height = terrain.get_height_at(player.position.x, player.position.z);
+            // Height queries are pure terrain functions: they never depend on
+            // chunk streaming, so physics stays stable at any speed.
+            let ground_height = world.get_height_at(player.position.x, player.position.z);
             player.update(fixed_dt, ground_height);
             accumulator -= fixed_dt;
         }
 
-        // --- Render ---
-        // Render the scene into the CRT filter's low-res target (640x360),
-        // using the first-person camera
-        crt_filter.begin_render(player.camera.get_macroquad_camera());
-        // Clear the target (black)
-        clear_background(BLACK);
+        // --- World streaming: generate/unload chunks around the player ---
+        // Budgeted (config::CHUNKS_PER_FRAME, nearest first) so this can
+        // never cause an FPS spike while walking into new terrain.
+        world.update(player.position);
 
-        // Draw the scene (terrain)
-        terrain.render();
+        // --- Render ---
+        // Pass 1: screen-space sky into the low-res target (behind everything)
+        crt_filter.begin_ui_pass();
+        clear_background(BLACK);
+        sky::draw(&player.camera);
+
+        // Pass 2: 3D scene with the first-person camera
+        crt_filter.begin_render(player.camera.get_macroquad_camera());
+        world.render(
+            player.camera.position,
+            player.camera.front,
+            get_time() as f32,
+        );
 
         // Upscale the target to the screen with the CRT shader applied
         crt_filter.draw_to_screen();
 
         // --- HUD (screen space, drawn on top of the CRT pass) ---
-        // FPS counter in the top-left corner. A dark shadow behind keeps it
-        // readable over bright terrain.
-        let fps_text = format!("FPS: {}", get_fps());
-        draw_text(&fps_text, 11.0, 27.0, 26.0, BLACK);
-        draw_text(&fps_text, 10.0, 26.0, 26.0, WHITE);
+        // FPS + streaming stats in the top-left corner. A dark shadow
+        // behind keeps it readable over bright terrain.
+        let hud_text = format!("FPS: {} | chunks: {}", get_fps(), world.chunk_count());
+        draw_text(&hud_text, 11.0, 27.0, 26.0, BLACK);
+        draw_text(&hud_text, 10.0, 26.0, 26.0, WHITE);
 
         // Frame pacing: optionally cap the frame rate (see config::TARGET_FPS).
         // Vsync is disabled in `window_conf`, so with the cap set to 0 the loop
@@ -129,4 +147,11 @@ async fn main() {
         // Present the next frame
         next_frame().await;
     }
+}
+
+/// Real entry point: `#[macroquad::main]` is not used because we need to
+/// customize `draw_call_vertex_capacity` / `draw_call_index_capacity`,
+/// which only `Window::from_config` exposes.
+fn main() {
+    macroquad::Window::from_config(window_conf(), run());
 }

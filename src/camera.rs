@@ -1,6 +1,7 @@
 use macroquad::prelude::*;
 use std::f32::consts::PI;
-use crate::config;
+
+/// First-person camera implementation for a voxel-based game.
 
 /// First-person camera implementation for a voxel-based game.
 #[derive(Clone, Debug)]

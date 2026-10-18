@@ -109,6 +109,19 @@ impl CrtFilter {
         }
     }
 
+    /// Points a 2D camera at the filter's low-resolution render target so
+    /// screen-space effects (e.g. the procedural sky gradient) can be
+    /// drawn *behind* the 3D scene: call this, draw the background, then
+    /// call `begin_render` for the world.
+    ///
+    /// Camera2D disables the depth test/write, so these draws can never
+    /// occlude the 3D pass that follows.
+    pub fn begin_ui_pass(&self) {
+        let mut camera = Camera2D::default();
+        camera.render_target = Some(self.render_target.clone());
+        set_camera(&camera);
+    }
+
     /// Points the camera at the filter's low-resolution render target.
     ///
     /// The scene must be drawn after this call and before `draw_to_screen`.

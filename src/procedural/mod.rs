@@ -1,6 +1,9 @@
 /// Procedural generation module.
-/// Exports: voxel_block, terrain, tree, shack.
-pub mod voxel_block;
+/// Exports: noise, biome, terrain, decoration, tree, voxel_block, shack.
+pub mod biome;
+pub mod decoration;
+pub mod noise;
+pub mod shack;
 pub mod terrain;
 pub mod tree;
-pub mod shack;
+pub mod voxel_block;
