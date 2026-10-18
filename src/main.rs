@@ -112,7 +112,8 @@ async fn run() {
         // Pass 1: screen-space sky into the low-res target (behind everything)
         crt_filter.begin_ui_pass();
         clear_background(BLACK);
-        sky::draw(&player.camera);
+        let (target_w, target_h) = crt_filter.target_size();
+        sky::draw(&player.camera, target_w, target_h);
 
         // Pass 2: 3D scene with the first-person camera
         crt_filter.begin_render(player.camera.get_macroquad_camera());

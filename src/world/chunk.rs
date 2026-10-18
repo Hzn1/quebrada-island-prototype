@@ -37,7 +37,7 @@ pub struct Chunk {
     /// Static geometry: terrain surface + decoration blocks.
     pub mesh: Mesh,
     /// Average water depth over the submerged columns (`None` = dry chunk).
-    /// Used to tint this chunk's sea quad from shallow to deep blue.
+    /// Used to tint this chunk's sea quads.
     pub water_depth: Option<f32>,
     /// Bounding sphere (world space) for cheap render-time culling.
     pub center: Vec3,
@@ -174,9 +174,12 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
             // Side faces toward lower neighbours, run-length encoded so
             // each material band becomes a single tall quad.
             for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let nh = grid_h(lx + dx, lz + dz) as i32;
-                if nh >= top {
-                    continue; // neighbour hides this side entirely
+                let nh_f = grid_h(lx + dx, lz + dz);
+                // Forçar emissão da face lateral caso haja qualquer diferença
+                // entre coluna e vizinho (evita buracos entre chunks com
+                // arredondamento/numérico). Só não emite se vizinho for >= top.
+                if nh_f + 1e-3 >= (top as f32) {
+                    continue;
                 }
                 let (light, normal) = match (dx, dz) {
                     (1, 0) => (LIGHT_SIDE_X, Vec3::X),
@@ -184,14 +187,31 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                     (0, 1) => (LIGHT_SIDE_Z, Vec3::Z),
                     _ => (LIGHT_SIDE_Z, Vec3::NEG_Z),
                 };
-                let mut y = nh;
-                while y < top {
-                    let kind = kind_at(y);
-                    let mut y2 = y + 1;
+                let mut y = nh_f.floor() as i32;
+                if y >= top {
+                    continue;
+                }
+                let mut sy = y;
+                while sy < top {
+                    let kind = kind_at(sy);
+                    let mut y2 = sy + 1;
                     while y2 < top && kind_at(y2) == kind {
-                        y2 += 1; // extend the run while the material matches
+                        y2 += 1;
                     }
-                    let (fy0, fy1) = (y as f32, y2 as f32);
+                    if (y2 as f32) < nh_f + 1e-4 {
+                        y2 = (nh_f + 1e-4).ceil() as i32;
+                    }
+                    if y2 > top {
+                        y2 = top;
+                    }
+                    if y2 <= sy {
+                        sy += 1;
+                        if sy >= top {
+                            break;
+                        }
+                        continue;
+                    }
+                    let (fy0, fy1) = (sy as f32, y2 as f32);
                     let color = face_color(kind, jitter, light, Vec3::ONE);
                     let corners = match (dx, dz) {
                         (1, 0) => [
@@ -212,7 +232,7 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                         ],
                     };
                     push_quad(&mut verts, &mut indices, corners, normal, color);
-                    y = y2;
+                    sy = y2;
                 }
             }
         }

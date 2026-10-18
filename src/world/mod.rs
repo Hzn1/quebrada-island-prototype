@@ -79,9 +79,8 @@ impl World {
     /// (depth testing rejects the hidden quads, so no sorting needed).
     pub fn render(&self, cam_pos: Vec3, cam_front: Vec3, time: f32) {
         let max_dist = (config::RENDER_DISTANCE as f32 + 0.75) * SIZE as f32;
-        let (pcx, pcz) = Self::player_chunk(cam_pos);
 
-        // --- Opaque pass: chunk meshes (collected water quads are drawn later)
+        // --- Opaque pass: chunk meshes (recolher água por chunk) ---
         let mut water_quads: Vec<(&Chunk, f32)> = Vec::with_capacity(64);
         for c in self.chunks.values() {
             // Cull: too far behind the camera, or outside the draw radius
@@ -99,42 +98,23 @@ impl World {
             }
         }
 
-        // --- Translucent pass: the sea -----------------------------------
-        // Open sea: one huge quad centred on the player chunk, extending
-        // past the loaded radius so the horizon is always water.
-        let center_x = pcx as f32 * SIZE as f32 + SIZE as f32 * 0.5;
-        let center_z = pcz as f32 * SIZE as f32 + SIZE as f32 * 0.5;
-        let extent = max_dist + 48.0;
-        draw_plane(
-            vec3(
-                center_x,
-                config::SEA_LEVEL + 0.35 + 0.03 * (time * 0.7).sin(),
-                center_z,
-            ),
-            vec2(extent, extent),
-            None,
-            Color::from_rgba(28, 92, 165, 210),
-        );
-
-        // Depth-shaded sea quads on top of the open-sea plane. Chunks far
-        // away are blended towards the horizon color (cheap aerial
-        // perspective that hides the render-distance edge).
+        // --- Translucent pass: água por chunk ---
+        // Desenhar DEPOIS do opaco. `draw_plane` trata `size` como meia-extensão,
+        // por isso usamos S/2 + overlap para cobrir todo o chunk sem fendas.
         for (c, depth) in water_quads {
-            let ring = (c.cx - pcx).abs().max((c.cz - pcz).abs()) as f32;
-            let haze = (ring / config::RENDER_DISTANCE as f32).min(1.0) * 0.75;
             let t = (depth / 12.0).min(1.0);
             let water = Color::from_rgba(
                 (52.0 - 30.0 * t) as u8,
                 (135.0 - 60.0 * t) as u8,
                 (200.0 - 45.0 * t) as u8,
-                165,
+                190,
             );
             let bob = 0.02 * (time * 1.3 + (c.cx + c.cz) as f32 * 0.6).sin();
             draw_plane(
                 vec3(c.center.x, config::SEA_LEVEL + 0.45 + bob, c.center.z),
-                vec2(SIZE as f32 * 0.5 + 0.03, SIZE as f32 * 0.5 + 0.03),
+                vec2(SIZE as f32 * 0.5 + 0.04, SIZE as f32 * 0.5 + 0.04),
                 None,
-                lerp_color(water, Color::from_rgba(150, 180, 215, 255), haze),
+                water,
             );
         }
     }
@@ -202,14 +182,4 @@ impl World {
         self.chunks
             .retain(|&(cx, cz), _| (cx - pcx).abs() <= keep && (cz - pcz).abs() <= keep);
     }
-}
-
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    let ch = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 255.0) as u8;
-    Color::from_rgba(
-        ch(a.r * 255.0, b.r * 255.0),
-        ch(a.g * 255.0, b.g * 255.0),
-        ch(a.b * 255.0, b.b * 255.0),
-        ch(a.a * 255.0, b.a * 255.0),
-    )
 }

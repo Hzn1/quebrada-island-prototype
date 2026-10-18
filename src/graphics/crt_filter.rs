@@ -1,5 +1,5 @@
+use macroquad::material::{gl_use_default_material, gl_use_material, load_material};
 use macroquad::prelude::*;
-use macroquad::material::{load_material, MaterialParams, gl_use_material, gl_use_default_material};
 
 // GLSL vertex shader for macroquad materials: transforms the quad with the
 // Model/Projection matrices and passes the texture coordinates along.
@@ -21,7 +21,7 @@ void main() {
 "#;
 
 // GLSL fragment shader for CRT monitor effect.
-// - Horizontal scanlines
+// - Horizontal scanlines (soft, target-aligned)
 // - Light vignette on edges
 const CRT_FRAGMENT_SHADER: &str = r#"
 #version 100
@@ -29,33 +29,34 @@ precision highp float;
 
 varying vec2 v_tex_coords;
 
-// "Texture" is reserved by macroquad: it is automatically bound to the
-// texture being drawn (the render target holding the scene).
 uniform sampler2D Texture;
+// Window size in logical pixels (used only for vignette consistency)
 uniform vec2 resolution;
+// Render target size in texels
+uniform vec2 target_size;
 
-// Simple vignette function: 1.0 at the center, 0.0 at the edges.
 float vignette(float strength) {
     vec2 centered = v_tex_coords * 2.0 - 1.0;
-    // pow() with a negative base is undefined in GLSL; the screen corners
-    // have radius > 1, where 1 - r*r goes negative.
-    return pow(max(0.0, 1.0 - dot(centered, centered)), strength);
+    float r2 = dot(centered, centered);
+    return pow(max(0.0, 1.0 - r2), strength);
 }
 
 void main() {
-    // Read the scene from the low-res render target
     vec4 tex_color = texture2D(Texture, v_tex_coords);
 
-    // Scanlines darken alternate bands of the RGB color. The alpha channel
-    // is left untouched: zeroing it would make the lines disappear (the
-    // material has blending disabled) or punch holes in it (if enabled).
-    // Period of 3 texels of the 640x360 target => ~120 lines.
-    float band = fract(v_tex_coords.y * resolution.y / 3.0);
-    float scanline = mix(0.7, 1.0, smoothstep(0.4, 0.6, band));
+    // Target-aligned scanlines: one cycle spans SCANLINES_PER_CYCLE
+    // horizontal rows of the low-res render target. This keeps the
+    // dark bands aligned to whole texel rows and avoids slicing voxels
+    // when upscaling to any window size.
+    const float SCANLINES_PER_CYCLE = 3.0;
+    float period = max(1.0, target_size.y / SCANLINES_PER_CYCLE);
+    float phase = fract(v_tex_coords.y * target_size.y / period);
 
-    // Vignette dims the corners slightly: v = 1.0 in the center, so
-    // intensity = 1.0 - (1.0 - v) * 0.3 = 0.7 at the edges, 1.0 in the center.
-    float intensity = mix(0.7, 1.0, vignette(2.0));
+    // Very soft modulation (0.96..1.0) — removes the "aggressive" CRT look
+    float scanline = 0.96 + 0.04 * cos(phase * 6.28318530718);
+
+    // Subtler vignette to avoid dark corners crushing detail
+    float intensity = mix(0.8, 1.0, vignette(1.8));
 
     gl_FragColor = vec4(tex_color.rgb * intensity * scanline, tex_color.a);
 }
@@ -95,11 +96,18 @@ impl CrtFilter {
                         name: "resolution".to_string(),
                         uniform_type: UniformType::Float2,
                         array_count: 1,
-                    }
+                    },
+                    UniformDesc {
+                        name: "target_size".to_string(),
+                        uniform_type: UniformType::Float2,
+                        array_count: 1,
+                    },
                 ],
+
                 ..Default::default()
-            }
-        ).expect("Failed to create CRT material");
+            },
+        )
+        .expect("Failed to create CRT material");
 
         Self {
             render_target,
@@ -107,6 +115,17 @@ impl CrtFilter {
             width,
             height,
         }
+    }
+
+    /// Pixel dimensions of the low-resolution render target, in texels.
+    ///
+    /// Draw calls that target the RT (the procedural sky) must be sized
+    /// with these values, **not** with `screen_width()`/`screen_height()`:
+    /// those always report the window size even when a render target is
+    /// bound, which would make a full-screen background only cover a
+    /// fraction of the buffer and leave the rest black.
+    pub fn target_size(&self) -> (f32, f32) {
+        (self.width as f32, self.height as f32)
     }
 
     /// Points a 2D camera at the filter's low-resolution render target so
@@ -117,7 +136,11 @@ impl CrtFilter {
     /// Camera2D disables the depth test/write, so these draws can never
     /// occlude the 3D pass that follows.
     pub fn begin_ui_pass(&self) {
-        let mut camera = Camera2D::default();
+        // Camera2D must cover the *entire* render target rect (pixel space),
+        // not the window. Using from_display_rect with target dims avoids the
+        // half-frame split when drawing to a lower-res render target.
+        let mut camera =
+            Camera2D::from_display_rect(Rect::new(0.0, 0.0, self.width as f32, self.height as f32));
         camera.render_target = Some(self.render_target.clone());
         set_camera(&camera);
     }
@@ -138,11 +161,16 @@ impl CrtFilter {
         // Use our custom material
         gl_use_material(&self.material);
 
-        // Set the resolution uniform (target size, used for the scanline density)
-        // NOTE: pass the Vec2 by value. A reference is also 8 bytes, so it
-        // would pass set_uniform's size check and copy the pointer instead.
-        let res = vec2(self.width as f32, self.height as f32);
+        // `resolution` must be the *window* size (logical pixels): the
+        // scanline pitch is anchored to real screen rows. It is refreshed
+        // every frame so resizing the window (or a DPI change) keeps the
+        // lines aligned. NOTE: pass the Vec2 by value - a reference would
+        // also be 8 bytes and pass set_uniform's size check, copying the
+        // pointer instead of the data.
+        let res = vec2(screen_width(), screen_height());
         self.material.set_uniform("resolution", res);
+        self.material
+            .set_uniform("target_size", vec2(self.width as f32, self.height as f32));
 
         // Draw a full-screen rectangle with the render target stretched over it.
         //
