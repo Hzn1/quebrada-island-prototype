@@ -30,6 +30,9 @@ pub struct Terrain {
     moisture: Perlin,
     /// High frequency bumps + coastline radius modulation.
     detail: Perlin,
+    /// Soft "town mask" noise used by the favela generator to break the
+    /// hillside into clusters of houses instead of a uniform carpet.
+    city: Perlin,
 }
 
 /// Smooth Hermite interpolation between two edges.
@@ -50,6 +53,7 @@ impl Terrain {
             rivers: Perlin::new(seed + 3),
             moisture: Perlin::new(seed + 4),
             detail: Perlin::new(seed + 5),
+            city: Perlin::new(seed + 6),
         }
     }
 
@@ -121,5 +125,22 @@ impl Terrain {
         let dx = (self.get_height_at(x + 1.0, z) - h).abs();
         let dz = (self.get_height_at(x, z + 1.0) - h).abs();
         dx.max(dz)
+    }
+
+    /// Urban (favela) density in `0..1`, driving both the paving of the
+    /// ground and where houses are allowed to spawn.
+    ///
+    /// `height` is the already-known column height, so this costs a single
+    /// cheap noise lookup instead of a second full terrain evaluation - it is
+    /// called once per column while meshing, so that matters.
+    ///
+    /// The town grows with altitude (nothing on the beach/water), and the
+    /// `city` noise carves clusters and empty patches so the hillside is not
+    /// uniformly covered.
+    pub fn urban_density(&self, height: f32, x: f32, z: f32) -> f32 {
+        // 0 at the shoreline, 1 up on the morro.
+        let base = ((height - config::SEA_LEVEL - 1.0) / 10.0).clamp(0.0, 1.0);
+        let mask = self.city.fbm(x * 0.010, z * 0.010, 2, 2.0, 0.5) * 0.5 + 0.5;
+        (base * (0.50 + 0.50 * mask)).clamp(0.0, 1.0)
     }
 }

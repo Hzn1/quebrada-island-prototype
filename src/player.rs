@@ -85,20 +85,43 @@ impl Player {
         self.velocity.z = move_dir.z * walk_speed;
     }
 
-    /// Applies physics (gravity) and checks ground collision.
-    pub fn apply_physics(&mut self, delta_time: f32, ground_height: f32) {
+    /// Applies physics (gravity) and resolves collisions.
+    ///
+    /// `ground_height` is the walkable terrain surface at the player's column;
+    /// `wall` returns the vertical span of the building occupying a column
+    /// (`None` when open). Horizontal movement is attempted one axis at a
+    /// time, so a blocked axis slides along the wall instead of stopping the
+    /// player dead - which is what makes 1-block-wide alleys pleasant to walk.
+    pub fn apply_physics(
+        &mut self,
+        delta_time: f32,
+        ground_height: f32,
+        wall: &dyn Fn(f32, f32) -> Option<(i32, i32)>,
+    ) {
         // Apply gravity if not grounded
         if !self.is_grounded {
             self.velocity.y -= config::GRAVITY * delta_time;
         }
 
-        // Apply movement
-        self.position.x += self.velocity.x * delta_time;
-        self.position.z += self.velocity.z * delta_time;
-        self.position.y += self.velocity.y * delta_time;
+        let half_height = config::PLAYER_HEIGHT / 2.0;
+        let feet = self.position.y - half_height;
 
-        // Simple ground collision: as soon as the player's feet touch the
-        // ground, snap them to the surface and stop the fall.
+        // Horizontal movement, axis by axis: houses block, open columns do not.
+        let next_x = self.position.x + self.velocity.x * delta_time;
+        if blocked(wall, next_x, self.position.z, feet) {
+            self.velocity.x = 0.0;
+        } else {
+            self.position.x = next_x;
+        }
+        let next_z = self.position.z + self.velocity.z * delta_time;
+        if blocked(wall, self.position.x, next_z, feet) {
+            self.velocity.z = 0.0;
+        } else {
+            self.position.z = next_z;
+        }
+
+        // Vertical movement + ground collision
+        self.position.y += self.velocity.y * delta_time;
         let half_height = config::PLAYER_HEIGHT / 2.0;
         let feet = self.position.y - half_height;
         // Small epsilon so that standing exactly on the surface still counts as
@@ -117,7 +140,12 @@ impl Player {
     }
 
     /// Main update step: handle input, consume a buffered jump, then physics.
-    pub fn update(&mut self, delta_time: f32, ground_height: f32) {
+    pub fn update(
+        &mut self,
+        delta_time: f32,
+        ground_height: f32,
+        wall: &dyn Fn(f32, f32) -> Option<(i32, i32)>,
+    ) {
         self.handle_input(delta_time);
 
         // Jump only when actually on the ground; the buffer also covers a jump
@@ -129,8 +157,37 @@ impl Player {
         }
         self.jump_buffer = (self.jump_buffer - delta_time).max(0.0);
 
-        self.apply_physics(delta_time, ground_height);
+        self.apply_physics(delta_time, ground_height, wall);
         // Update the camera's position to match the player's eye level
         self.camera.position = self.position + Vec3::Y * (config::PLAYER_HEIGHT / 2.0);
+    }
+}
+
+/// True when a building occupies column `(x, z)` at the player's body height,
+/// i.e. moving there would push the player into a wall. Blocks that sit
+/// entirely below the feet (a roof) or fully above the head (an overhang)
+/// leave the column passable.
+fn blocked(wall: &dyn Fn(f32, f32) -> Option<(i32, i32)>, x: f32, z: f32, feet: f32) -> bool {
+    match wall(x, z) {
+        Some((lo, hi)) => hi as f32 >= feet && lo as f32 <= feet + config::PLAYER_HEIGHT,
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wall_blocks_only_at_body_height() {
+        // A wall occupying rows 10..=15 (blocks span [10, 16]).
+        let wall = |_x: f32, _z: f32| Some((10, 15));
+        assert!(blocked(&wall, 0.0, 0.0, 10.0), "feet at the base of the wall");
+        assert!(blocked(&wall, 0.0, 0.0, 12.0), "body inside the wall");
+        assert!(!blocked(&wall, 0.0, 0.0, 16.0), "standing on the roof");
+        assert!(!blocked(&wall, 0.0, 0.0, 7.0), "wall starts above the head");
+        // Open column never blocks.
+        let open = |_x: f32, _z: f32| None;
+        assert!(!blocked(&open, 0.0, 0.0, 3.0));
     }
 }

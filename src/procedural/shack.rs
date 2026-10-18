@@ -25,7 +25,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
                 let block = VoxelBlock {
                     position: pos,
                     voxel_type: VoxelType::Brick,
-                    color: VoxelBlock::get_color_for_type(VoxelType::Brick),
+                    color: VoxelBlock::color_for(VoxelType::Brick, 0),
                 };
                 blocks.push(block);
             }
@@ -35,7 +35,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
                 let block = VoxelBlock {
                     position: pos,
                     voxel_type: VoxelType::Brick,
-                    color: VoxelBlock::get_color_for_type(VoxelType::Brick),
+                    color: VoxelBlock::color_for(VoxelType::Brick, 0),
                 };
                 blocks.push(block);
             }
@@ -46,7 +46,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
                     let block = VoxelBlock {
                         position: pos,
                         voxel_type: VoxelType::Brick,
-                        color: VoxelBlock::get_color_for_type(VoxelType::Brick),
+                        color: VoxelBlock::color_for(VoxelType::Brick, 0),
                     };
                     blocks.push(block);
                 }
@@ -58,7 +58,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
                     let block = VoxelBlock {
                         position: pos,
                         voxel_type: VoxelType::Brick,
-                        color: VoxelBlock::get_color_for_type(VoxelType::Brick),
+                        color: VoxelBlock::color_for(VoxelType::Brick, 0),
                     };
                     blocks.push(block);
                 }
@@ -73,7 +73,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
             let block = VoxelBlock {
                 position: pos,
                 voxel_type: VoxelType::Concrete,
-                color: VoxelBlock::get_color_for_type(VoxelType::Concrete),
+                color: VoxelBlock::color_for(VoxelType::Concrete, 0),
             };
             blocks.push(block);
         }
@@ -88,7 +88,7 @@ pub fn generate_shack(base_position: Vec3) -> Vec<VoxelBlock> {
             let block = VoxelBlock {
                 position: pos,
                 voxel_type: VoxelType::BluePlastic,
-                color: VoxelBlock::get_color_for_type(VoxelType::BluePlastic),
+                color: VoxelBlock::color_for(VoxelType::BluePlastic, 0),
             };
             blocks.push(block);
         }

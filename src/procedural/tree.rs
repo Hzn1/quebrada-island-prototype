@@ -15,7 +15,7 @@ pub type StampFn<'a> = dyn FnMut(VoxelStamp) + 'a;
 /// generators readable).
 #[inline]
 fn push(emit: &mut StampFn, x: i32, y: i32, z: i32, kind: VoxelType) {
-    emit(VoxelStamp { x, y, z, kind });
+    emit(VoxelStamp::new(x, y, z, kind));
 }
 
 /// Deciduous tree: a wooden trunk with a slightly flared base and a

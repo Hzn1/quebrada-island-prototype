@@ -99,7 +99,8 @@ async fn run() {
             // Height queries are pure terrain functions: they never depend on
             // chunk streaming, so physics stays stable at any speed.
             let ground_height = world.get_height_at(player.position.x, player.position.z);
-            player.update(fixed_dt, ground_height);
+            let wall = |x: f32, z: f32| world.wall_at(x, z);
+            player.update(fixed_dt, ground_height, &wall);
             accumulator -= fixed_dt;
         }
 

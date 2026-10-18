@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use macroquad::prelude::*;
 
 use crate::config;
+use crate::procedural::structures;
 use crate::procedural::terrain::Terrain;
 use chunk::{Chunk, SIZE};
 
@@ -47,6 +48,27 @@ impl World {
     /// Number of chunks currently resident in memory.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    /// Vertical span of the building occupying column `(x, z)`, or `None`
+    /// when the column is open. Physics uses it for horizontal collision.
+    /// Chunks that are not loaded yet report `None`, so streaming never
+    /// blocks the player (the same contract as `get_height_at`).
+    pub fn wall_at(&self, x: f32, z: f32) -> Option<(i32, i32)> {
+        let (cx, cz) = Self::player_chunk(vec3(x, 0.0, z));
+        let c = self.chunks.get(&(cx, cz))?;
+        let lx = x.floor() as i32 - cx * SIZE;
+        let lz = z.floor() as i32 - cz * SIZE;
+        if !(0..SIZE).contains(&lx) || !(0..SIZE).contains(&lz) {
+            return None;
+        }
+        let i = (lx + lz * SIZE) as usize;
+        let (lo, hi) = (c.wall_lo[i], c.wall_hi[i]);
+        if lo <= hi {
+            Some((lo, hi))
+        } else {
+            None
+        }
     }
 
     /// Synchronously generates the chunks around `pos`. Called once at
@@ -93,6 +115,11 @@ impl World {
             }
 
             draw_mesh(&c.mesh);
+            // Overhead wiring: a few line segments per chunk, stroked in the
+            // same 3D pass so it depth-tests against the houses.
+            for &(a, b) in &c.wires {
+                draw_line_3d(a, b, Color::from_rgba(26, 26, 30, 235));
+            }
             if let Some(depth) = c.water_depth {
                 water_quads.push((c, depth));
             }
@@ -129,7 +156,11 @@ impl World {
                 let x = a.cos() * (ring * 4) as f32;
                 let z = a.sin() * (ring * 4) as f32;
                 let h = self.get_height_at(x, z);
-                if h > config::SEA_LEVEL + 1.0 && self.terrain.slope_at(x, z) <= 1.5 {
+                if h > config::SEA_LEVEL + 1.0
+                    && self.terrain.slope_at(x, z) <= 1.5
+                    // Never start inside a house (the walls are solid).
+                    && !structures::is_built(x.floor() as i32, z.floor() as i32, &self.terrain, self.seed)
+                {
                     return vec3(x, h + config::PLAYER_HEIGHT / 2.0, z);
                 }
             }

@@ -16,6 +16,7 @@ use crate::config;
 use crate::procedural::biome::Biome;
 use crate::procedural::decoration;
 use crate::procedural::noise::hash01;
+use crate::procedural::structures;
 use crate::procedural::terrain::Terrain;
 use crate::procedural::voxel_block::{VoxelBlock, VoxelStamp, VoxelType};
 
@@ -36,6 +37,14 @@ pub struct Chunk {
     pub cz: i32,
     /// Static geometry: terrain surface + decoration blocks.
     pub mesh: Mesh,
+    /// Overhead power wires (world-space segments) strung above the alleys.
+    /// Drawn as lines each frame; a handful per chunk, so it is effectively
+    /// free compared to the mesh.
+    pub wires: Vec<(Vec3, Vec3)>,
+    /// Per-column building volume for collision: lowest / highest block y of
+    /// the houses (`i32::MAX` / `i32::MIN` where there is no building).
+    pub wall_lo: Vec<i32>,
+    pub wall_hi: Vec<i32>,
     /// Average water depth over the submerged columns (`None` = dry chunk).
     /// Used to tint this chunk's sea quads.
     pub water_depth: Option<f32>,
@@ -69,9 +78,10 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 
 /// Final vertex color: base color x face light x per-column value jitter
 /// (breaks up tiling repetition). Grass gets its dry/wet tint through the
-/// `tint` parameter (see `grass_tint`).
-fn face_color(kind: VoxelType, jitter: f32, light: f32, tint: Vec3) -> Color {
-    let base = VoxelBlock::get_color_for_type(kind);
+/// `tint` parameter (see `grass_tint`); `tone` selects a variant from the
+/// material's palette (paint colours, brick shades, zinc weathering...).
+fn face_color(kind: VoxelType, tone: u8, jitter: f32, light: f32, tint: Vec3) -> Color {
+    let base = VoxelBlock::color_for(kind, tone);
     let m = light * jitter;
     let r = (base.r * tint.x * m * 255.0).clamp(0.0, 255.0) as u8;
     let g = (base.g * tint.y * m * 255.0).clamp(0.0, 255.0) as u8;
@@ -142,9 +152,21 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                 .max((grid_h(lx, lz + 1) - top as f32).abs());
 
             let biome = Biome::classify(top as f32, humidity, slope);
-            let surface = biome.surface_block(hash01(wx, wz, seed ^ 0x0A11_0001));
-            let filler = biome.filler_block();
-            let top_depth = biome.top_depth();
+            // Favela: on the hillside the ground stops being soil and becomes
+            // paved concrete. The density is a pure function of the column,
+            // so two chunks agree perfectly on where the town starts.
+            let urban = terrain.urban_density(top as f32, wx as f32 + 0.5, wz as f32 + 0.5);
+            let (surface, filler, top_depth) = if urban > config::URBAN_THRESHOLD {
+                (VoxelType::Concrete, VoxelType::Stone, 1)
+            } else {
+                (
+                    biome.surface_block(hash01(wx, wz, seed ^ 0x0A11_0001)),
+                    biome.filler_block(),
+                    biome.top_depth(),
+                )
+            };
+            let surface_tone =
+                (hash01(wx, wz, seed ^ 0x0A11_0009) * VoxelBlock::palette_len(surface) as f32) as u8;
             // Material of the block at depth y inside this column
             let kind_at = |y: i32| if top - y <= top_depth { surface } else { filler };
 
@@ -168,7 +190,7 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                 &mut indices,
                 [vec3(w0, y_top, z0), vec3(w0, y_top, z1), vec3(w1, y_top, z1), vec3(w1, y_top, z0)],
                 Vec3::Y,
-                face_color(surface, jitter, LIGHT_TOP, tint),
+                face_color(surface, surface_tone, jitter, LIGHT_TOP, tint),
             );
 
             // Side faces toward lower neighbours, run-length encoded so
@@ -192,7 +214,8 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                         y2 += 1; // extend the run while the material matches
                     }
                     let (fy0, fy1) = (y as f32, y2 as f32);
-                    let color = face_color(kind, jitter, light, Vec3::ONE);
+                    let tone = if kind == surface { surface_tone } else { 0 };
+                    let color = face_color(kind, tone, jitter, light, Vec3::ONE);
                     let corners = match (dx, dz) {
                         (1, 0) => [
                             vec3(w1, fy0, z0), vec3(w1, fy1, z0),
@@ -218,7 +241,38 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
         }
     }
 
-    // --- 3. Decorations (trees, palms, rocks, bushes) -------------------
+    // --- 3. Favela: houses, alleys, stairs, rooftops, water tanks --------
+    // The urban generator clips its output to this chunk, so two adjacent
+    // chunks mesh their own half of a shared house with no duplicated work.
+    // Houses are hollow: only walls, slabs and roofs are stamped, and the
+    // occlusion pass below culls their buried and interior faces exactly
+    // like it does for a tree.
+    let urban = structures::populate(ox, oz, S, terrain, seed);
+    let wires = urban.wires;
+
+    // All stamped blocks (houses + natural decorations) share one map so the
+    // mesher can cull faces between them.
+    //
+    // In the same pass we record each column's *building volume* (its lowest
+    // and highest block) for horizontal collision. Alley columns
+    // (`x % CELL == 0` / `z % CELL == 0`) never hold a house - only stairs and
+    // poles - so they are left out and stay walk-through, keeping the becos
+    // navigable.
+    let cell_size = config::URBAN_CELL_SIZE;
+    let mut wall_lo = vec![i32::MAX; (S * S) as usize];
+    let mut wall_hi = vec![i32::MIN; (S * S) as usize];
+    let mut dec_blocks: HashMap<(i32, i32, i32), (VoxelType, u8)> =
+        HashMap::with_capacity(urban.blocks.len() + 512);
+    for s in urban.blocks {
+        if s.x.rem_euclid(cell_size) != 0 && s.z.rem_euclid(cell_size) != 0 {
+            let idx = ((s.x - ox) + (s.z - oz) * S) as usize;
+            wall_lo[idx] = wall_lo[idx].min(s.y);
+            wall_hi[idx] = wall_hi[idx].max(s.y);
+        }
+        dec_blocks.insert((s.x, s.y, s.z), (s.kind, s.tone));
+    }
+
+    // --- 3b. Natural decorations, kept out of the town -------------------
     // Candidate cells overlapping this chunk plus a one-cell margin: a
     // canopy that overhangs the border is emitted by both chunks, and each
     // one keeps only the blocks inside its own bounds -> no gaps, no
@@ -229,25 +283,38 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
     let cell_min_z = oz.div_euclid(cell) - 1;
     let cell_max_z = (oz + S - 1).div_euclid(cell) + 1;
 
-    let mut dec_blocks: HashMap<(i32, i32, i32), VoxelType> = HashMap::new();
     for ccz in cell_min_z..=cell_max_z {
         for ccx in cell_min_x..=cell_max_x {
             let Some((dec, fx, fz)) = decoration::candidate(ccx, ccz, terrain, seed) else {
                 continue;
             };
+            let by = terrain.get_height_at(fx, fz);
+            // The town owns this spot: no trees growing through the roofs.
+            // Natural decoration density scales with urban density being low.
+            if terrain.urban_density(by, fx, fz) > config::URBAN_THRESHOLD {
+                continue;
+            }
             let bx = fx.floor() as i32;
             let bz = fz.floor() as i32;
-            let by = terrain.get_height_at(fx, fz) as i32; // ground surface
+            let by = by as i32; // ground surface
             decoration::stamp(&dec, bx, by, bz, &mut |s: VoxelStamp| {
                 if s.x >= ox && s.x < ox + S && s.z >= oz && s.z < oz + S {
-                    dec_blocks.insert((s.x, s.y, s.z), s.kind);
+                    // Houses win over stray vegetation on a shared cell.
+                    dec_blocks
+                        .entry((s.x, s.y, s.z))
+                        .or_insert((s.kind, s.tone));
                 }
             });
         }
     }
 
-    // Mesh the decoration blocks, occluded by the terrain and by each other
-    for (&(x, y, z), &kind) in &dec_blocks {
+    // Mesh the stamped blocks, occluded by the terrain and by each other.
+    for (&(x, y, z), &(kind, tone)) in &dec_blocks {
+        // Safety valve: the index buffer is u16, so stop stamping faces
+        // before a pathological chunk could overflow it.
+        if verts.len() > config::MAX_CHUNK_VERTICES {
+            break;
+        }
         let ground_top = top_at(x, z);
         if y < ground_top {
             continue; // fully buried in terrain - never visible
@@ -270,7 +337,7 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                 &mut indices,
                 [vec3(w0, fy1, z0), vec3(w0, fy1, z1), vec3(w1, fy1, z1), vec3(w1, fy1, z0)],
                 Vec3::Y,
-                face_color(kind, jitter, LIGHT_TOP, tint),
+                face_color(kind, tone, jitter, LIGHT_TOP, tint),
             );
         }
         // Side faces
@@ -283,7 +350,7 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                     (0, 1) => (LIGHT_SIDE_Z, Vec3::Z),
                     _ => (LIGHT_SIDE_Z, Vec3::NEG_Z),
                 };
-                let color = face_color(kind, jitter, light, tint);
+                let color = face_color(kind, tone, jitter, light, tint);
                 let corners = match (dx, dz) {
                     (1, 0) => [
                         vec3(w1, fy0, z0), vec3(w1, fy1, z0),
@@ -313,13 +380,14 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
                 &mut indices,
                 [vec3(w0, fy0, z0), vec3(w1, fy0, z0), vec3(w1, fy0, z1), vec3(w0, fy0, z1)],
                 Vec3::NEG_Y,
-                face_color(kind, jitter, LIGHT_BOTTOM, tint),
+                face_color(kind, tone, jitter, LIGHT_BOTTOM, tint),
             );
         }
     }
 
-    // The index buffer is u16: a heightmap chunk stays far below the limit
-    // (~15k vertices worst case), but fail loudly if that ever changes.
+    // The index buffer is u16: the mesher stops adding decoration faces at
+    // `MAX_CHUNK_VERTICES`, well before the limit. Fail loudly if the terrain
+    // pass alone ever gets close (that would mean the generator changed).
     assert!(
         verts.len() <= u16::MAX as usize,
         "chunk ({cx}, {cz}) mesh has too many vertices for u16 indices"
@@ -359,6 +427,9 @@ pub fn build(cx: i32, cz: i32, terrain: &Terrain, seed: u64) -> Chunk {
             indices,
             texture: None, // macroquad binds its white texture -> vertex colors
         },
+        wires,
+        wall_lo,
+        wall_hi,
         water_depth,
         center,
         radius,
@@ -546,5 +617,35 @@ mod audit {
         assert_eq!(missing_tops, 0, "columns without a top face");
         assert_eq!(missing_side, 0, "exposed side faces missing");
         assert_eq!(short_side, 0, "side faces not covering the exposed height");
+    }
+
+    /// The collision columns must line up exactly with the houses: every
+    /// footprint column is solid, every alley column stays open (so the becos
+    /// are walkable). Any drift here would either trap the player or let them
+    /// walk through a brick wall.
+    #[test]
+    fn collision_matches_houses() {
+        let seed = config::WORLD_SEED;
+        let terrain = Terrain::new(seed);
+        let s = config::CHUNK_SIZE;
+        let mut mismatch = 0usize;
+        for cz in -3..3 {
+            for cx in -3..3 {
+                let c = build(cx, cz, &terrain, seed);
+                let (ox, oz) = (cx * s, cz * s);
+                for lz in 0..s {
+                    for lx in 0..s {
+                        let i = (lx + lz * s) as usize;
+                        let solid = c.wall_lo[i] <= c.wall_hi[i];
+                        let built = structures::is_built(ox + lx, oz + lz, &terrain, seed);
+                        if solid != built {
+                            mismatch += 1;
+                        }
+                    }
+                }
+            }
+        }
+        println!("collision_mismatches={mismatch}");
+        assert_eq!(mismatch, 0, "collision columns do not match the house footprints");
     }
 }

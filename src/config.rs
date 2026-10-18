@@ -33,6 +33,38 @@ pub const CHUNKS_PER_FRAME: usize = 2;
 /// Chunks generated synchronously at startup around the spawn point.
 pub const WARMUP_RADIUS: i32 = 2;
 
+// ---------------------------------------------------------------------------
+// Favela (urban) generation
+// ---------------------------------------------------------------------------
+
+/// World-aligned grid that tiles the hillside with houses. Buildings leave a
+/// strip of the cell open (`URBAN_ALLEY`) so a street layout falls out of the
+/// grid for free: the alleys are the columns `x % CELL == 0` / `z % CELL == 0`.
+pub const URBAN_CELL_SIZE: i32 = 8;
+/// Width (in blocks) of the alley kept on the -X / -Z edge of every cell.
+pub const URBAN_ALLEY: i32 = 1;
+/// Urban density (0..1) above which a column is paved and a cell may host a
+/// house. Below it the world keeps its natural look.
+pub const URBAN_THRESHOLD: f32 = 0.35;
+/// Maximum vertical floors of one house (laje slabs). Kept low on purpose: the
+/// "vertical favela" read comes from houses stacked *up the slope*, not from
+/// isolated towers - and it keeps the per-chunk vertex budget bounded.
+pub const MAX_FLOORS: i32 = 3;
+/// Height of one floor, in blocks.
+pub const FLOOR_HEIGHT: i32 = 3;
+/// Chance that a house carries a rooftop water tank.
+pub const WATER_TANK_CHANCE: f32 = 0.55;
+/// Chance that a house gets a raised zinc sheet instead of a bare laje.
+pub const ZINC_ROOF_CHANCE: f32 = 0.35;
+/// Chance that a house gets a terracotta roof ("telhas").
+pub const TILE_ROOF_CHANCE: f32 = 0.30;
+/// Chance that a pole (with overhead wires) is planted on an alley corner.
+pub const POLE_CHANCE: f32 = 0.20;
+/// Hard ceiling on a chunk mesh's vertices. The mesher indexes with u16, so a
+/// chunk must stay below 65536 vertices; we stop adding decorations well
+/// before that instead of corrupting the buffer.
+pub const MAX_CHUNK_VERTICES: usize = 60_000;
+
 /// Side length of the decoration grid in blocks: one spawn candidate per
 /// cell keeps decorations evenly spread and physically unable to overlap.
 pub const DECOR_CELL_SIZE: i32 = 6;

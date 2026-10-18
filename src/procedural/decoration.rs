@@ -126,7 +126,7 @@ fn rock(base_x: i32, base_y: i32, base_z: i32, hash: u64, emit: &mut tree::Stamp
                 let dist = (ex * ex + ey * ey + ez * ez).sqrt();
                 let jitter = 0.25 * (hash01(dx * 17 + dz, dy, hash ^ 0x88) - 0.5);
                 if dist + jitter <= 1.0 {
-                    emit(VoxelStamp { x: base_x + dx, y: base_y + dy, z: base_z + dz, kind: VoxelType::Stone });
+                    emit(VoxelStamp::new(base_x + dx, base_y + dy, base_z + dz, VoxelType::Stone));
                 }
             }
         }
@@ -147,7 +147,7 @@ fn bush(base_x: i32, base_y: i32, base_z: i32, hash: u64, emit: &mut tree::Stamp
                 let ey = (dy as f32 - cy) / ry;
                 let ez = dz as f32 / radius;
                 if ex * ex + ey * ey + ez * ez <= 1.0 {
-                    emit(VoxelStamp { x: base_x + dx, y: base_y + dy, z: base_z + dz, kind: VoxelType::Leaves });
+                    emit(VoxelStamp::new(base_x + dx, base_y + dy, base_z + dz, VoxelType::Leaves));
                 }
             }
         }
